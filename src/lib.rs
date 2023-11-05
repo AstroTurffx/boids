@@ -6,15 +6,16 @@ mod graphics;
 mod texture;
 
 use crate::graphics::State;
-use imgui_winit_support::winit::dpi::LogicalSize;
-use imgui_winit_support::winit::event::{Event, WindowEvent};
-use imgui_winit_support::winit::event_loop::{ControlFlow, EventLoop};
-use imgui_winit_support::winit::window::{WindowBuilder, WindowId};
 use instant::Instant;
 use log::{debug, trace, warn};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 use wgpu::SurfaceError;
+use winit::dpi::LogicalSize;
+use winit::event::Event::UserEvent;
+use winit::event::{Event, WindowEvent};
+use winit::event_loop::{ControlFlow, EventLoopBuilder};
+use winit::window::{WindowBuilder, WindowId};
 
 const SIZE_X: u32 = 600;
 const SIZE_Y: u32 = 600;
@@ -39,7 +40,7 @@ pub async fn run() {
 
     trace!("Starting window creation");
     let now = Instant::now();
-    let event_loop = EventLoop::new();
+    let event_loop = EventLoopBuilder::<GEvent>::with_user_event().build();
     let window = WindowBuilder::new()
         .with_title("Boids")
         .with_inner_size(LogicalSize::new(SIZE_X, SIZE_Y))
@@ -80,7 +81,7 @@ pub async fn run() {
             Event::RedrawRequested(window_id) if window_id == state.window().id() => {
                 let delta_s = last_frame.elapsed();
                 let now = Instant::now();
-                state.ui().io_mut().update_delta_time(now - last_frame);
+
                 last_frame = now;
 
                 state.update(delta_s);
@@ -97,7 +98,7 @@ pub async fn run() {
                     }
                 }
             }
-            Event::MainEventsCleared => {
+            Event::MainEventsCleared | UserEvent(GEvent::RequestRedraw) => {
                 state.window().request_redraw();
             }
             _ => (),
@@ -131,5 +132,20 @@ fn handle_window_event(
         WindowEvent::Resized(physical_size) => state.resize(physical_size),
         WindowEvent::ScaleFactorChanged { new_inner_size, .. } => state.resize(*new_inner_size),
         _ => {}
+    }
+}
+#[derive(Debug)]
+enum GEvent {
+    RequestRedraw,
+}
+struct ExampleRepaintSignal(std::sync::Mutex<winit::event_loop::EventLoopProxy<GEvent>>);
+
+impl epi::backend::RepaintSignal for ExampleRepaintSignal {
+    fn request_repaint(&self) {
+        self.0
+            .lock()
+            .unwrap()
+            .send_event(GEvent::RequestRedraw)
+            .ok();
     }
 }

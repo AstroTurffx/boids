@@ -1,8 +1,6 @@
 use crate::camera::Camera;
-use cgmath::num_traits::Pow;
-use imgui::{Condition, MouseButton, Ui};
-use imgui_winit_support::winit::event::{MouseScrollDelta, WindowEvent};
-use log::debug;
+use egui::{Context, PointerButton};
+use winit::event::{MouseScrollDelta, WindowEvent};
 
 pub(crate) struct CameraController {
     auto_rotate: bool,
@@ -37,7 +35,7 @@ impl CameraController {
         }
     }
 
-    pub(crate) fn update_camera(&mut self, camera: &mut Camera, delta: f32, ui: &mut Ui) {
+    pub(crate) fn update_camera(&mut self, camera: &mut Camera, delta: f32, ui: Context) {
         use cgmath::InnerSpace;
         let speed = self.scroll_speed * delta;
         let forward = camera.target - camera.eye;
@@ -57,12 +55,8 @@ impl CameraController {
 
         let mut delta: f32 = 0.0;
 
-        if ui.is_mouse_dragging(MouseButton::Middle) {
-            let drag = ui.mouse_drag_delta_with_button(MouseButton::Middle)[0];
-            delta = drag - self.last_drag;
-            self.last_drag = drag;
-        } else {
-            self.last_drag = 0.0
+        if ui.input(|input| input.pointer.is_decidedly_dragging() && input.pointer.middle_down()) {
+            delta = ui.input(|input| input.pointer.delta().x)
         }
 
         if self.auto_rotate {
@@ -83,17 +77,17 @@ impl CameraController {
         self.scroll_delta = 0.0;
         // Update UI
         {
-            let window = ui.window("Camera");
-            window
-                .size([200.0, 100.0], Condition::FirstUseEver)
-                .position([210.0, 5.0], Condition::FirstUseEver)
-                .resizable(false)
-                .build(|| {
-                    ui.checkbox("Auto-rotate", &mut self.auto_rotate);
-                    ui.separator();
-                    ui.text(format!("Scroll speed: {}", self.scroll_speed));
-                    ui.text(format!("Drag speed: {}", self.drag_speed));
-                });
+            // let window = ui.window("Camera");
+            // window
+            //     .size([200.0, 100.0], Condition::FirstUseEver)
+            //     .position([210.0, 5.0], Condition::FirstUseEver)
+            //     .resizable(false)
+            //     .build(|| {
+            //         ui.checkbox("Auto-rotate", &mut self.auto_rotate);
+            //         ui.separator();
+            //         ui.text(format!("Scroll speed: {}", self.scroll_speed));
+            //         ui.text(format!("Drag speed: {}", self.drag_speed));
+            //     });
         }
     }
 }

@@ -2,17 +2,18 @@ use crate::bind_group::{create_bind_group, CompactBindGroupDescriptor, CompactBi
 use crate::camera::{Camera, CameraUniform};
 use crate::camera_controller::CameraController;
 use crate::texture::Texture;
+use egui::{FontDefinitions, SidePanel};
+use egui_wgpu_backend::{RenderPass, ScreenDescriptor};
+use egui_winit_platform::{Platform, PlatformDescriptor};
 use fps_counter::FPSCounter;
-use imgui::{Condition, Context};
-use imgui_wgpu::{Renderer, RendererConfig};
-use imgui_winit_support::winit::dpi::PhysicalSize;
-use imgui_winit_support::winit::event::{Event, WindowEvent};
-use imgui_winit_support::winit::window::Window;
-use imgui_winit_support::WinitPlatform;
 use instant::Instant;
 use log::{debug, trace};
 use std::time::Duration;
 use wgpu::util::DeviceExt;
+use wgpu::{Device, Queue, Surface, SurfaceConfiguration, TextureFormat};
+use winit::dpi::PhysicalSize;
+use winit::event::{Event, WindowEvent};
+use winit::window::Window;
 
 pub(crate) struct State {
     surface: wgpu::Surface,
@@ -22,9 +23,8 @@ pub(crate) struct State {
     size: PhysicalSize<u32>,
     window: Window,
 
-    imgui: Context,
-    imgui_renderer: Renderer,
-    imgui_platform: WinitPlatform,
+    egui_platform: Platform,
+    egui_render_pass: RenderPass,
 
     camera: Camera,
     camera_uniform: CameraUniform,
@@ -85,31 +85,17 @@ impl State {
         let timer = Instant::now();
         let size = window.inner_size();
 
-        let (device, queue, config, surface) = configure_surface(&window, size).await;
+        let (device, queue, config, surface, format) = configure_surface(&window, size).await;
 
         // --- UI ---
-        let mut imgui = imgui::Context::create();
-        let mut imgui_platform = WinitPlatform::init(&mut imgui);
-
-        imgui_platform.attach_window(
-            imgui.io_mut(),
-            &window,
-            imgui_winit_support::HiDpiMode::Rounded,
-        );
-        imgui.set_ini_filename(None);
-
-        imgui
-            .fonts()
-            .add_font(&[imgui::FontSource::DefaultFontData { config: None }]);
-
-        imgui.io_mut().font_global_scale = (1.0 / imgui_platform.hidpi_factor()) as f32;
-
-        let renderer_config = RendererConfig {
-            texture_format: config.format,
-            ..Default::default()
-        };
-
-        let imgui_renderer = Renderer::new(&mut imgui, &device, &queue, renderer_config);
+        let egui_platform = Platform::new(PlatformDescriptor {
+            physical_width: size.width,
+            physical_height: size.height,
+            scale_factor: window.scale_factor(),
+            font_definitions: FontDefinitions::default(),
+            style: Default::default(),
+        });
+        let egui_render_pass = RenderPass::new(&device, format, 1);
 
         // --- Textures ---
         trace!("Loading images");
@@ -245,11 +231,10 @@ impl State {
             num_indices,
             camera_uniform,
             camera_bind_group,
-            imgui,
-            imgui_renderer,
-            imgui_platform,
             camera_controller,
             fps: FPSCounter::new(),
+            egui_platform,
+            egui_render_pass,
         }
     }
 
@@ -263,9 +248,8 @@ impl State {
         }
     }
 
-    pub(crate) fn ui_handle_event(&mut self, event: &Event<()>) {
-        self.imgui_platform
-            .handle_event(self.imgui.io_mut(), &self.window, event)
+    pub(crate) fn ui_handle_event<T>(&mut self, event: &Event<T>) {
+        self.egui_platform.handle_event(event)
     }
 
     pub(crate) fn input(&mut self, event: &WindowEvent) -> bool {
@@ -273,23 +257,27 @@ impl State {
     }
 
     pub(crate) fn update(&mut self, delta_s: Duration) {
-        let delta = delta_s.as_secs_f32();
-        let ui = self.imgui.frame();
+        let delta = delta_s.as_secs_f64();
+        self.egui_platform.update_time(delta);
+        // let ui = self.imgui.frame();
+        //
+        // {
+        //     let window = ui.window("Boids");
+        //     window
+        //         .size([200.0, 100.0], Condition::FirstUseEver)
+        //         .position([5.0, 5.0], Condition::FirstUseEver)
+        //         .resizable(false)
+        //         .build(|| {
+        //             ui.text(format!("FPS: {}", self.fps.tick()));
+        //             ui.text(format!("Render time: {:?}ms", delta_s.as_millis()));
+        //         });
+        // }
 
-        {
-            let window = ui.window("Boids");
-            window
-                .size([200.0, 100.0], Condition::FirstUseEver)
-                .position([5.0, 5.0], Condition::FirstUseEver)
-                .resizable(false)
-                .build(|| {
-                    ui.text(format!("FPS: {}", self.fps.tick()));
-                    ui.text(format!("Render time: {:?}ms", delta_s.as_millis()));
-                });
-        }
-
-        self.camera_controller
-            .update_camera(&mut self.camera, delta, ui);
+        self.camera_controller.update_camera(
+            &mut self.camera,
+            delta as f32,
+            self.egui_platform.context(),
+        );
         self.camera_uniform.update_view_proj(&self.camera);
         self.queue.write_buffer(
             &self.camera_buffer,
@@ -303,13 +291,13 @@ impl State {
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("render_encoder"),
-            });
+        let mut render_encoder =
+            self.device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("render_encoder"),
+                });
 
-        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        let mut render_pass = render_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("render_pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: &view,
@@ -335,19 +323,60 @@ impl State {
         render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
         render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
 
-        self.imgui_renderer
-            .render(
-                self.imgui.render(),
-                &self.queue,
-                &self.device,
-                &mut render_pass,
-            )
-            .expect("Unable to draw UI");
-
         drop(render_pass);
 
+        // let ui_view = output
+        //     .texture
+        //     .create_view(&wgpu::TextureViewDescriptor::default());
+
+        self.egui_platform.begin_frame();
+
+        SidePanel::left("menu")
+            .resizable(false)
+            .default_width(150.0)
+            .show(&self.egui_platform.context(), |ui| ui.label("hi"));
+
+        let full_output = self.egui_platform.end_frame(Some(&self.window));
+        let paint_jobs = self.egui_platform.context().tessellate(full_output.shapes);
+
+        let mut ui_encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("ui_encoder"),
+            });
+
+        // Upload all resources for the GPU.
+        let screen_descriptor = ScreenDescriptor {
+            physical_width: self.config.width,
+            physical_height: self.config.height,
+            scale_factor: self.window.scale_factor() as f32,
+        };
+
+        let tdelta: egui::TexturesDelta = full_output.textures_delta;
+        self.egui_render_pass
+            .add_textures(&self.device, &self.queue, &tdelta)
+            .expect("add texture ok");
+        self.egui_render_pass.update_buffers(
+            &self.device,
+            &self.queue,
+            &paint_jobs,
+            &screen_descriptor,
+        );
+
+        // Record all render passes.
+        self.egui_render_pass
+            .execute(
+                &mut ui_encoder,
+                &view,
+                &paint_jobs,
+                &screen_descriptor,
+                None,
+            )
+            .unwrap();
+
         // submit will accept anything that implements IntoIter
-        self.queue.submit(std::iter::once(encoder.finish()));
+        self.queue
+            .submit([render_encoder.finish(), ui_encoder.finish()]);
         output.present();
 
         Ok(())
@@ -356,9 +385,9 @@ impl State {
     pub fn window(&self) -> &Window {
         &self.window
     }
-    pub fn ui(&mut self) -> &mut Context {
-        &mut self.imgui
-    }
+    // pub fn ui(&mut self) -> &mut Context {
+    //     &mut self.imgui
+    // }
     pub fn size(&self) -> &PhysicalSize<u32> {
         &self.size
     }
@@ -367,12 +396,7 @@ impl State {
 async fn configure_surface(
     window: &Window,
     size: PhysicalSize<u32>,
-) -> (
-    wgpu::Device,
-    wgpu::Queue,
-    wgpu::SurfaceConfiguration,
-    wgpu::Surface,
-) {
+) -> (Device, Queue, SurfaceConfiguration, Surface, TextureFormat) {
     // The instance is a handle to our GPU
     // Backends::all => Vulkan + Metal + DX12 + Browser WebGPU
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -429,7 +453,7 @@ async fn configure_surface(
         .find(|f| f.is_srgb())
         .unwrap_or(surface_caps.formats[0]);
 
-    let config = wgpu::SurfaceConfiguration {
+    let config = SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         format: surface_format,
         width: size.width,
@@ -440,5 +464,5 @@ async fn configure_surface(
     };
     surface.configure(&device, &config);
 
-    (device, queue, config, surface)
+    (device, queue, config, surface, surface_format)
 }
