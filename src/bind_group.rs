@@ -13,7 +13,6 @@ pub struct CompactBindGroupEntry<'a> {
     pub binding: u32,
     pub visibility: wgpu::ShaderStages,
     pub ty: wgpu::BindingType,
-    #[cfg_attr(any(feature = "trace", feature = "replay"), serde(default))]
     pub count: Option<NonZeroU32>,
     pub resource: BindingResource<'a>,
 }

@@ -1,8 +1,14 @@
 /// Just some utility to making bind groups easier
 mod bind_group;
+mod boids;
 mod camera;
 mod camera_controller;
 mod graphics;
+mod instance;
+mod mipmaps;
+mod model;
+mod resources;
+// mod octree;
 mod texture;
 
 use crate::graphics::State;
@@ -15,6 +21,7 @@ use winit::dpi::LogicalSize;
 use winit::event::Event::UserEvent;
 use winit::event::{Event, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoopBuilder};
+use winit::platform::windows::EventLoopBuilderExtWindows;
 use winit::window::{WindowBuilder, WindowId};
 
 const SIZE_X: u32 = 600;
